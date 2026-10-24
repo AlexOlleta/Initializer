@@ -1,0 +1,9 @@
+minimumReleaseAge: 1440
+minimumReleaseAgeStrict: true
+blockExoticSubdeps: true
+trustPolicy: no-downgrade
+strictDepBuilds: true
+dangerouslyAllowAllBuilds: false
+allowBuilds: {}
+trustPolicyExclude:
+  - semver@6.3.1

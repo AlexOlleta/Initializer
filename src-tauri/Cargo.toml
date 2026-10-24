@@ -1,0 +1,56 @@
+[package]
+name = "initializer"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+
+[lib]
+name = "initializer_lib"
+crate-type = ["rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-single-instance = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+uuid = { version = "1", features = ["v4", "serde"] }
+url = "2"
+dirs = "7"
+base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "ico", "bmp", "webp"] }
+ico = "0.6"
+sysinfo = { version = "0.39", default-features = false, features = ["system"] }
+winreg = "0.56"
+tauri-winrt-notification = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt"] }
+tracing-appender = "0.2"
+ts-rs = { version = "12", features = ["uuid-impl", "serde-compat", "no-serde-warnings"] }
+windows = { version = "0.62", features = [
+  "Win32_Foundation",
+  "Win32_System_Com",
+  "Win32_System_Com_StructuredStorage",
+  "Win32_UI_Shell",
+  "Win32_UI_Shell_Common",
+  "Win32_UI_Shell_PropertiesSystem",
+  "Win32_UI_WindowsAndMessaging",
+  "Win32_Graphics_Gdi",
+  "Win32_Storage_FileSystem",
+  "Win32_Storage_EnhancedStorage",
+  "Win32_Globalization",
+] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true
