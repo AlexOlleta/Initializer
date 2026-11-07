@@ -19,10 +19,10 @@ browser = default | installed{id} | custom{exePath,family: chromium|firefox}
 
 ## Launch flow (`--run <uuid>` or "Test"/"Run")
 
-1. `launcher::plan` keeps enabled items in order; URLs are grouped per (browser, profile) at the position of the first one.
+1. `launcher::plan` keeps enabled items in order and splits them into segments: an item with `delayAfterMs > 0` closes its segment. Inside a segment, URLs are grouped per (browser, profile, private, args) at the position of the first one. A later group that matches one already opened launches in `existingWindow` mode so its tabs join that window. The closing item's delay runs after the segment's last step; other steps use their own override or the preset default.
 2. Processes are snapshotted once (`sysinfo`); `skipIfRunning` matches exe path (or name when the path is unreadable) or `processName` for apps.
 3. Exe → `ShellExecuteExW` with Windows-quoted args and `nShow`; app → `shell:AppsFolder\<aumid>`; path → `open` verb; URLs → browser exe with family flags (Chromium `--profile-directory= --new-window`, Firefox `-P -new-window/-new-tab`), falling back to the default handler.
-4. Delay after each step (item override or preset default). Failures → toast (headless) or in-app report; exit code 1 on item failures, 2 on fatal errors.
+4. Delay after each step as planned. Failures → toast (headless) or in-app report; exit code 1 on item failures, 2 on fatal errors.
 
 ## Detection
 

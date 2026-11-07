@@ -29,18 +29,14 @@ pub enum Step<'a> {
     Urls {
         group: UrlGroup<'a>,
         items: Vec<&'a Item>,
+        continues: bool,
     },
 }
 
-impl Step<'_> {
-    fn delay_ms(&self, default_ms: u32) -> u32 {
-        let last = match self {
-            Step::Single(item) => Some(*item),
-            Step::Urls { items, .. } => items.last().copied(),
-        };
-        last.and_then(|item| item.delay_after_ms)
-            .unwrap_or(default_ms)
-    }
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlannedStep<'a> {
+    pub step: Step<'a>,
+    pub delay_ms: u32,
 }
 
 pub struct RunningProcesses {
@@ -89,39 +85,95 @@ impl RunningProcesses {
     }
 }
 
-pub fn plan(preset: &Preset) -> Vec<Step<'_>> {
-    let mut steps: Vec<Step> = Vec::new();
+pub fn plan(preset: &Preset) -> Vec<PlannedStep<'_>> {
+    let mut planned = Vec::new();
+    let mut opened: Vec<UrlGroup> = Vec::new();
+    let mut segment: Vec<Step> = Vec::new();
     for item in preset.items.iter().filter(|item| item.enabled) {
-        if let ItemTarget::Url {
+        match url_group(item) {
+            Some(group) => {
+                let existing = segment.iter_mut().find_map(|step| match step {
+                    Step::Urls {
+                        group: g, items, ..
+                    } if *g == group => Some(items),
+                    _ => None,
+                });
+                match existing {
+                    Some(items) => items.push(item),
+                    None => {
+                        let continues = opened.contains(&group);
+                        segment.push(Step::Urls {
+                            group,
+                            items: vec![item],
+                            continues,
+                        });
+                    }
+                }
+            }
+            None => segment.push(Step::Single(item)),
+        }
+        if let Some(barrier_ms) = item.delay_after_ms.filter(|ms| *ms > 0) {
+            close_segment(
+                &mut segment,
+                &mut planned,
+                &mut opened,
+                preset.default_delay_ms,
+                Some(barrier_ms),
+            );
+        }
+    }
+    close_segment(
+        &mut segment,
+        &mut planned,
+        &mut opened,
+        preset.default_delay_ms,
+        None,
+    );
+    planned
+}
+
+fn url_group(item: &Item) -> Option<UrlGroup<'_>> {
+    match &item.target {
+        ItemTarget::Url {
             browser,
             profile,
             private,
             args,
             ..
-        } = &item.target
-        {
-            let group = UrlGroup {
-                browser,
-                profile: profile.as_deref().filter(|p| !p.is_empty()),
-                private: *private,
-                args,
-            };
-            let existing = steps.iter_mut().find_map(|step| match step {
-                Step::Urls { group: g, items } if *g == group => Some(items),
-                _ => None,
-            });
-            match existing {
-                Some(items) => items.push(item),
-                None => steps.push(Step::Urls {
-                    group,
-                    items: vec![item],
-                }),
-            }
-        } else {
-            steps.push(Step::Single(item));
-        }
+        } => Some(UrlGroup {
+            browser,
+            profile: profile.as_deref().filter(|p| !p.is_empty()),
+            private: *private,
+            args,
+        }),
+        _ => None,
     }
-    steps
+}
+
+fn close_segment<'a>(
+    segment: &mut Vec<Step<'a>>,
+    planned: &mut Vec<PlannedStep<'a>>,
+    opened: &mut Vec<UrlGroup<'a>>,
+    default_ms: u32,
+    barrier_ms: Option<u32>,
+) {
+    let count = segment.len();
+    for (index, step) in segment.drain(..).enumerate() {
+        if let Step::Urls { group, .. } = &step
+            && !opened.contains(group)
+        {
+            opened.push(group.clone());
+        }
+        let own_ms = match &step {
+            Step::Single(item) => item.delay_after_ms.unwrap_or(default_ms),
+            Step::Urls { .. } => default_ms,
+        };
+        let delay_ms = match barrier_ms {
+            Some(ms) if index + 1 == count => ms,
+            _ => own_ms,
+        };
+        planned.push(PlannedStep { step, delay_ms });
+    }
 }
 
 pub fn run(preset: &Preset, catalog: &BrowserCatalog) -> LaunchReport {
@@ -129,16 +181,25 @@ pub fn run(preset: &Preset, catalog: &BrowserCatalog) -> LaunchReport {
     let steps = plan(preset);
     let mut results = Vec::new();
     let total = steps.len();
-    for (index, step) in steps.iter().enumerate() {
-        let launched_any = match step {
+    for (index, planned) in steps.iter().enumerate() {
+        let launched_any = match &planned.step {
             Step::Single(item) => {
                 let result = run_single(item, &running);
                 let launched = result.status == LaunchStatus::Launched;
                 results.push(result);
                 launched
             }
-            Step::Urls { group, items } => {
-                let outcome = open_urls(group, items, preset.tab_mode, catalog);
+            Step::Urls {
+                group,
+                items,
+                continues,
+            } => {
+                let tab_mode = if *continues {
+                    TabMode::ExistingWindow
+                } else {
+                    preset.tab_mode
+                };
+                let outcome = open_urls(group, items, tab_mode, catalog);
                 let launched = outcome.is_ok();
                 results.extend(items.iter().map(|item| match &outcome {
                     Ok(()) => success(item),
@@ -147,9 +208,8 @@ pub fn run(preset: &Preset, catalog: &BrowserCatalog) -> LaunchReport {
                 launched
             }
         };
-        let delay = step.delay_ms(preset.default_delay_ms);
-        if launched_any && index + 1 < total && delay > 0 {
-            thread::sleep(Duration::from_millis(delay as u64));
+        if launched_any && index + 1 < total && planned.delay_ms > 0 {
+            thread::sleep(Duration::from_millis(planned.delay_ms as u64));
         }
     }
     LaunchReport { results }
@@ -414,6 +474,29 @@ mod tests {
         }
     }
 
+    fn with_delay(mut item: Item, ms: Option<u32>) -> Item {
+        item.delay_after_ms = ms;
+        item
+    }
+
+    fn urls_of<'a>(planned: &'a PlannedStep) -> (Vec<&'a str>, bool) {
+        match &planned.step {
+            Step::Urls {
+                items, continues, ..
+            } => (
+                items
+                    .iter()
+                    .map(|item| match &item.target {
+                        ItemTarget::Url { url, .. } => url.as_str(),
+                        _ => "",
+                    })
+                    .collect(),
+                *continues,
+            ),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
     #[test]
     fn groups_urls_by_browser_profile_and_mode_at_first_position() {
         let chrome = BrowserRef::Installed {
@@ -427,7 +510,7 @@ mod tests {
         }
         let preset = preset(vec![
             url_item("https://a.com", chrome.clone(), Some("Default")),
-            exe_item(r"C:\x\discord.exe"),
+            with_delay(exe_item(r"C:\x\discord.exe"), None),
             url_item("https://b.com", BrowserRef::Default, None),
             url_item("https://c.com", chrome.clone(), Some("Default")),
             url_item("https://e.com", chrome.clone(), Some("Profile 1")),
@@ -436,26 +519,89 @@ mod tests {
         ]);
         let steps = plan(&preset);
         assert_eq!(steps.len(), 5);
-        match &steps[0] {
-            Step::Urls { items, group } => {
-                assert_eq!(items.len(), 2);
-                assert_eq!(group.profile, Some("Default"));
-            }
-            other => panic!("unexpected {other:?}"),
-        }
-        assert!(matches!(steps[1], Step::Single(_)));
-        assert!(matches!(&steps[2], Step::Urls { items, .. } if items.len() == 1));
-        assert!(
-            matches!(&steps[3], Step::Urls { group, .. } if group.profile == Some("Profile 1"))
+        assert_eq!(
+            urls_of(&steps[0]),
+            (vec!["https://a.com", "https://c.com"], false)
         );
-        assert!(matches!(&steps[4], Step::Urls { group, .. } if group.private));
+        assert!(matches!(steps[1].step, Step::Single(_)));
+        assert_eq!(urls_of(&steps[2]).0, ["https://b.com"]);
+        assert!(
+            matches!(&steps[3].step, Step::Urls { group, .. } if group.profile == Some("Profile 1"))
+        );
+        assert!(matches!(&steps[4].step, Step::Urls { group, .. } if group.private));
+    }
+
+    #[test]
+    fn item_delay_splits_tabs_and_later_tabs_join_the_open_window() {
+        let chrome = BrowserRef::Installed {
+            id: "Google Chrome".into(),
+        };
+        let mut preset = preset(vec![
+            with_delay(
+                url_item("https://youtube.com/a", chrome.clone(), None),
+                Some(5000),
+            ),
+            url_item("https://youtube.com/b", chrome.clone(), None),
+            url_item("https://youtube.com/c", chrome.clone(), None),
+        ]);
+        preset.default_delay_ms = 300;
+        let steps = plan(&preset);
+        assert_eq!(steps.len(), 2);
+        assert_eq!(urls_of(&steps[0]), (vec!["https://youtube.com/a"], false));
+        assert_eq!(steps[0].delay_ms, 5000);
+        assert_eq!(
+            urls_of(&steps[1]),
+            (vec!["https://youtube.com/b", "https://youtube.com/c"], true)
+        );
+        assert_eq!(steps[1].delay_ms, 300);
+    }
+
+    #[test]
+    fn barrier_delay_runs_after_the_whole_segment() {
+        let chrome = BrowserRef::Installed {
+            id: "Google Chrome".into(),
+        };
+        let mut preset = preset(vec![
+            url_item("https://x.com", chrome.clone(), None),
+            with_delay(exe_item(r"C:\x\a.exe"), None),
+            with_delay(url_item("https://y.com", chrome.clone(), None), Some(3000)),
+            url_item("https://z.com", chrome.clone(), None),
+        ]);
+        preset.default_delay_ms = 200;
+        let steps = plan(&preset);
+        assert_eq!(steps.len(), 3);
+        assert_eq!(urls_of(&steps[0]).0, ["https://x.com", "https://y.com"]);
+        assert_eq!(steps[0].delay_ms, 200);
+        assert!(matches!(steps[1].step, Step::Single(_)));
+        assert_eq!(steps[1].delay_ms, 3000);
+        assert_eq!(urls_of(&steps[2]), (vec!["https://z.com"], true));
+    }
+
+    #[test]
+    fn zero_item_delay_overrides_default_without_splitting() {
+        let mut preset = preset(vec![
+            with_delay(exe_item(r"C:\x\a.exe"), Some(0)),
+            with_delay(
+                url_item("https://a.com", BrowserRef::Default, None),
+                Some(0),
+            ),
+            url_item("https://b.com", BrowserRef::Default, None),
+        ]);
+        preset.default_delay_ms = 400;
+        let steps = plan(&preset);
+        assert_eq!(steps.len(), 2);
+        assert_eq!(steps[0].delay_ms, 0);
+        assert_eq!(
+            urls_of(&steps[1]),
+            (vec!["https://a.com", "https://b.com"], false)
+        );
     }
 
     #[test]
     fn step_delay_prefers_item_override() {
         let preset = preset(vec![exe_item(r"C:\x\a.exe")]);
         let steps = plan(&preset);
-        assert_eq!(steps[0].delay_ms(250), 1000);
+        assert_eq!(steps[0].delay_ms, 1000);
     }
 
     #[test]

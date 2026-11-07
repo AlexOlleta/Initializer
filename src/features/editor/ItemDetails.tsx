@@ -329,7 +329,7 @@ function CommonFields({ item, defaultDelayMs, onChange }: Props) {
           />
         </Field>
       ) : null}
-      <Field label={t("item.delay")}>
+      <Field label={t("item.delay")} hint={t("item.delayHint")}>
         <NumberInput
           value={item.delayAfterMs === null ? null : item.delayAfterMs / 1000}
           min={0}

@@ -117,7 +117,8 @@
     "private": "Abrir en modo privado (incógnito)",
     "privateHint": "Usa InPrivate en Edge y ventana privada en Firefox. No tendrás la sesión iniciada en tus webs.",
     "browserArgs": "Argumentos del navegador",
-    "privateBadge": "Incógnito"
+    "privateBadge": "Incógnito",
+    "delayHint": "Todo lo que va después espera; las pestañas siguientes se añaden a la ventana ya abierta."
   },
   "apps": {
     "title": "Apps instaladas",

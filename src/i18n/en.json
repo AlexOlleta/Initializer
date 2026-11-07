@@ -117,7 +117,8 @@
     "private": "Open in private mode (incognito)",
     "privateHint": "Uses InPrivate in Edge and a private window in Firefox. You won't be signed in to your sites.",
     "browserArgs": "Browser arguments",
-    "privateBadge": "Private"
+    "privateBadge": "Private",
+    "delayHint": "Everything after this item waits; later tabs join the window already opened."
   },
   "apps": {
     "title": "Installed apps",
